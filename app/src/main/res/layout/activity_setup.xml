@@ -24,5 +24,10 @@
         android:layout_height="wrap_content"
         android:text="Ứng dụng sẽ chạy ẩn sau khi hoàn tất."
         android:layout_marginTop="20dp" />
-
+    <Button
+        android:id="@+id/btn_open_accessibility"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Bật Trợ năng"
+        android:layout_marginTop="20dp"/>
 </LinearLayout>

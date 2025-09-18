@@ -1,89 +1,95 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.childmonitoringapp">
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Quyền thực sự cần -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Quyền cần thiết -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+    <!-- Chỉ cần MICROPHONE nếu bạn ghi âm từ MIC -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
 
-    <!-- Quyền nhạy cảm/khó pass review (cân nhắc): -->
-    <!-- <uses-permission android:name="android.permission.READ_SMS" /> -->
+    <!-- Usage stats: user phải bật trong Settings -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions"/>
 
-    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false"/>
 
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
+    <!-- Đặt queries ở cấp manifest (KHÔNG để trong <application>) -->
     <queries>
-        <package android:name="com.google.android.apps.messaging" />
-        <intent>
-            <action android:name="android.intent.action.SEND" />
-            <data android:mimeType="text/plain" />
-        </intent>
+        <package android:name="com.google.android.apps.messaging"/>
+        <package android:name="com.whatsapp"/>
+        <package android:name="com.zing.zalo"/>
+        <package android:name="com.facebook.orca"/>
+        <package android:name="org.telegram.messenger"/>
     </queries>
 
     <application
+        android:name=".App"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+        android:theme="@style/Theme.ChildMonitoringApp">
 
         <activity
             android:name=".SetupActivity"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
 
+        <!-- Service quay màn hình: DÙNG đúng tên class bạn có -->
         <service
-            android:name=".service.MonitoringService"
-            android:enabled="true"
+            android:name="com.example.childmonitoringapp.service.MonitoringService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|microphone">
-            <intent-filter>
-                <action android:name="com.example.childmonitoringapp.service.MonitoringService" />
-            </intent-filter>
-        </service>
+            android:foregroundServiceType="mediaProjection|microphone" />
 
-        <receiver
-            android:name=".AdminReceiver"
-            android:permission="android.permission.BIND_DEVICE_ADMIN"
+        <!-- Accessibility service: chỉ giữ 1 khai báo, exported=false -->
+        <service
+            android:name="com.example.childmonitoringapp.AccessibilityMonitorService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="false">
             <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
             </intent-filter>
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin" />
-        </receiver>
-
-        <receiver
-            android:name=".BootReceiver"
-            android:enabled="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <service
-            android:name=".AccessibilityMonitorService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
+            <!-- BẮT BUỘC: tệp cấu hình accessibility -->
             <meta-data
                 android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
+                android:resource="@xml/accessibility_service_config"/>
         </service>
+
+        <!-- Khởi động sau reboot -->
+        <receiver
+            android:name=".boot.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- FileProvider: sử dụng đúng applicationId động -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+
     </application>
 </manifest>
