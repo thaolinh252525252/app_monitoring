@@ -2,7 +2,6 @@ package com.example.childmonitoringapp
 
 import android.Manifest
 import android.app.Activity
-import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -10,6 +9,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import android.widget.Button
 import android.widget.Toast
@@ -17,170 +17,156 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.childmonitoringapp.service.MonitoringService
-import android.os.Environment
+import java.io.File
+
 class SetupActivity : AppCompatActivity() {
-    private val REQUEST_PERMISSIONS = 100
-    private val REQUEST_SCREEN_CAPTURE = 101
-    private val REQUEST_DEVICE_ADMIN = 102
-    private lateinit var mediaProjectionManager: MediaProjectionManager
+
     private val TAG = "SetupActivity"
-    private var isServiceStarted = false // Thêm biến kiểm tra trạng thái service
+    private val REQ_PERMS = 100
+    private val REQ_CAPTURE = 101
+
+    private lateinit var mpm: MediaProjectionManager
+
+    // Poll kiểm tra trợ năng đã bật chưa
+    private val accHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val accPoll = object : Runnable {
+        override fun run() {
+            if (isAccessibilityEnabled()) {
+                Toast.makeText(this@SetupActivity, "Đã bật Trợ năng cho ứng dụng", Toast.LENGTH_SHORT).show()
+                accHandler.removeCallbacks(this)
+            } else {
+                accHandler.postDelayed(this, 500)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_setup)
 
-        mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val btnSetup = findViewById<Button>(R.id.btn_setup)
-        if (btnSetup != null) {
-            btnSetup.setOnClickListener {
-                if (!isServiceStarted) {
-                    checkAndRequestPermissions()
-                } else {
-                    Log.w(TAG, "Service already started, skipping")
-                    Toast.makeText(this, "Dịch vụ đã khởi động", Toast.LENGTH_SHORT).show()
-                }
-            }
-        } else {
-            Log.e(TAG, "btn_setup not found in layout: R.layout.activity_setup")
-            Toast.makeText(this, "Lỗi giao diện, kiểm tra layout", Toast.LENGTH_LONG).show()
-        }
-        val btnOpenAccessibility = findViewById<Button>(R.id.btn_open_accessibility)
-        btnOpenAccessibility.setOnClickListener {
-            try {
-                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                })
-            } catch (e: Exception) {
-                Toast.makeText(this, "Không mở được Cài đặt Trợ năng", Toast.LENGTH_SHORT).show()
-                Log.e(TAG, "Error opening accessibility settings: ${e.message}")
-            }
+        mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+
+        // Nút xin quyền (mic + phone state + screen capture)
+        findViewById<Button>(R.id.btn_setup).setOnClickListener {
+            checkAndRequestPermissions()
         }
 
-        // Xóa dòng checkAndRequestPermissions() tự động để tránh gọi lặp
-        // Ghi 1 file text vào thư mục Movies của app để test quyền ghi
+        // Nút mở trang Trợ năng
+        findViewById<Button>(R.id.btn_open_accessibility).setOnClickListener {
+            openAccessibilitySettings()
+            startAccPoll()
+        }
+
+        // Ghi probe để bạn test adb ls
         val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)!!
         dir.mkdirs()
-        val probe = java.io.File(dir, "probe.txt")
-        probe.writeText("ok ${System.currentTimeMillis()}")
-        Log.i("SRCHECK", "probe wrote: ${probe.absolutePath} size=${probe.length()}")
-
+        File(dir, "probe.txt").writeText("ok ${System.currentTimeMillis()}")
+        Log.i("SRCHECK", "probe wrote: ${dir.absolutePath}")
     }
 
     private fun checkAndRequestPermissions() {
-        val basePermissions = mutableListOf(
+        val need = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.READ_PHONE_STATE
-        )
-        if (Build.VERSION.SDK_INT >= 33) {
-            basePermissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        val permissionsToRequest = basePermissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (permissionsToRequest.isNotEmpty()) {
-            ActivityCompat.requestPermissions(
-                this,
-                permissionsToRequest.toTypedArray(),
-                REQUEST_PERMISSIONS
-            )
+        ).apply {
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+        }.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+
+        if (need.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, need.toTypedArray(), REQ_PERMS)
         } else {
             requestScreenCapture()
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_PERMISSIONS) {
-            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+    override fun onRequestPermissionsResult(req: Int, perms: Array<out String>, res: IntArray) {
+        super.onRequestPermissionsResult(req, perms, res)
+        if (req == REQ_PERMS) {
+            if (res.all { it == PackageManager.PERMISSION_GRANTED }) {
                 requestScreenCapture()
             } else {
-                Log.w(TAG, "Some permissions denied: ${permissions.joinToString()}")
-                Toast.makeText(this, "Vui lòng cấp tất cả quyền để tiếp tục", Toast.LENGTH_LONG)
-                    .show()
+                Toast.makeText(this, "Vui lòng cấp đủ quyền để tiếp tục", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun requestScreenCapture() {
         try {
-            val intent = mediaProjectionManager.createScreenCaptureIntent()
-            startActivityForResult(intent, REQUEST_SCREEN_CAPTURE)
+            val intent = mpm.createScreenCaptureIntent()
+            startActivityForResult(intent, REQ_CAPTURE)
         } catch (e: Exception) {
-            Log.e(TAG, "Error requesting screen capture: ${e.message}")
+            Log.e(TAG, "requestScreenCapture error: ${e.message}")
             Toast.makeText(this, "Lỗi khi yêu cầu quay màn hình", Toast.LENGTH_LONG).show()
         }
     }
 
-    private fun requestDeviceAdmin() {
-        try {
-            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                putExtra(
-                    DevicePolicyManager.EXTRA_DEVICE_ADMIN,
-                    ComponentName(this@SetupActivity, AdminReceiver::class.java)
-                )
-                putExtra(
-                    DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                    "Ứng dụng cần quyền quản trị để chạy ngầm"
-                )
-            }
-            startActivityForResult(intent, REQUEST_DEVICE_ADMIN)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error requesting device admin: ${e.message}")
-            Toast.makeText(this, "Lỗi cấu hình quản trị", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_SCREEN_CAPTURE) {
+    // 👉 GỬI TOKEN CHO SERVICE, để Service GIỮ MediaProjection
+    override fun onActivityResult(req: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(req, resultCode, data)
+        if (req == REQ_CAPTURE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
-                val app = application as App
-                app.resultCode = resultCode
-                app.projectionData = data
+                // Bơm projection vào Service
+                val svc = Intent(this, MonitoringService::class.java).apply {
+                    action = MonitoringService.ACTION_SET_PROJECTION
+                    putExtra("resultCode", resultCode)
+                    putExtra("projectionData", data)
+                }
+                androidx.core.content.ContextCompat.startForegroundService(this, svc)
 
-                Log.d(TAG, "Saved projection: resultCode=$resultCode, data=$data")
                 Toast.makeText(
                     this,
-                    "Đã xin quyền quay màn hình. Vào Cài đặt > Trợ năng bật \"ChildMonitoringApp\" để bật ghi theo app.",
+                    "Đã xin quyền quay màn hình. Bật Trợ năng để bắt đầu theo app.",
                     Toast.LENGTH_LONG
                 ).show()
 
-                // ❌ KHÔNG start MonitoringService ở đây
-                // ❌ KHÔNG start AccessibilityService (Android tự quản lý khi người dùng bật)
-                isServiceStarted = true
+                // Mở trang Trợ năng ngay cho người dùng bật
+                openAccessibilitySettings()
+                startAccPoll() // (nếu bạn đã có hàm poll này)
             } else {
-                Log.e(TAG, "Screen capture denied or data null: resultCode=$resultCode")
-                Toast.makeText(this, "Permission denied", Toast.LENGTH_SHORT).show()
-            }
-        } else if (requestCode == REQUEST_DEVICE_ADMIN) {
-            if (resultCode == Activity.RESULT_OK) {
-                Log.d(TAG, "Device admin permission granted")
-            } else {
-                Log.w(TAG, "Device admin permission denied")
-                Toast.makeText(this, "Quyền quản trị bị từ chối", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Bạn đã từ chối quyền quay màn hình", Toast.LENGTH_LONG).show()
             }
         }
     }
 
 
-    override fun onPause() {
-        super.onPause()
-        Log.d(TAG, "onPause called")
+    // Mở trang chi tiết nếu ROM hỗ trợ, không thì fallback trang Trợ năng chung
+    private fun openAccessibilitySettings() {
+        val detail = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
+            data = android.net.Uri.parse("package:$packageName")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            if (detail.resolveActivity(packageManager) != null) {
+                startActivity(detail)
+            } else {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "openAccessibilitySettings error: ${e.message}")
+            Toast.makeText(this, "Không mở được Cài đặt Trợ năng", Toast.LENGTH_LONG).show()
+        }
     }
 
-    override fun onStop() {
-        super.onStop()
-        Log.d(TAG, "onStop called")
+    private fun isAccessibilityEnabled(): Boolean {
+        val me = ComponentName(this, AccessibilityMonitorService::class.java).flattenToString()
+        val enabled = android.provider.Settings.Secure.getString(
+            contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+        return enabled.split(':').any { it.equals(me, ignoreCase = true) } && am.isEnabled
+    }
+
+    private fun startAccPoll() {
+        accHandler.removeCallbacks(accPoll)
+        accHandler.postDelayed(accPoll, 500)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "onDestroy called")
+        accHandler.removeCallbacks(accPoll)
     }
-
 }
