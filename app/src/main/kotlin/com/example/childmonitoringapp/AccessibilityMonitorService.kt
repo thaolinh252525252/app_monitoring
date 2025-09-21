@@ -2,6 +2,7 @@ package com.example.childmonitoringapp
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.media.AudioManager
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
@@ -19,101 +20,129 @@ class AccessibilityMonitorService : AccessibilityService() {
         "com.samsung.android.messaging",
         "com.whatsapp"
     )
+    //ngat
+    // Thời gian chờ trước khi STOP (mặc định dài hơn để tránh cắt sớm)
+    private val GRACE_MS = 15_000L              // 15 giây
+    private val INTERLUDE_GRACE_MS = 12_000L    // cho các màn chen ngang
 
-    // Bỏ qua overlay/IME/System UI
-    private val ignorePkgs = setOf(
+    // Các package chen ngang hay gặp khi vẫn còn ở trong app chat
+    private val interludes = setOf(
         "com.android.systemui",
-        "com.samsung.android.honeyboard",
-        "com.google.android.inputmethod.latin",
-        "com.touchtype.swiftkey",
-        "com.google.android.ext.services",
-        "com.android.permissioncontroller",
-        "com.android.launcher3",
-        "com.google.android.apps.nexuslauncher",
-        "com.miui.home"
+        "com.android.permissioncontroller", "com.google.android.permissioncontroller",
+        "com.android.documentsui", "com.google.android.documentsui",
+        "com.miui.securitycenter", "com.miui.gallery",
+        "com.google.android.apps.photos",
+        "com.android.camera", "com.sec.android.app.camera"
     )
 
-    private var currentTargetPkg: String? = null
+    // Launcher/Home: rời app thật sự → có thể STOP nhanh hơn nếu muốn
+    private val launchers = setOf(
+        "com.miui.home",
+        "com.google.android.apps.nexuslauncher",
+        "com.sec.android.app.launcher",
+        "com.huawei.android.launcher"
+    )
 
+    // Trạng thái
+    private lateinit var am: AudioManager
+    private var currentPkg: String? = null
+    private var currentTargetPkg: String? = null
+    private var voipActive = false
+
+    // Grace cho STOP (screen &/or voip)
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var stopGraceRunnable: Runnable? = null
-    private val stopGraceMs = 2500L
+    private var graceRunnable: Runnable? = null
+    private val graceMs = 2500L
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        am = getSystemService(AUDIO_SERVICE) as AudioManager
+        Log.d(TAG, "onServiceConnected")
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString() ?: return
-        val cls = event.className?.toString() ?: ""
-
-        // Bỏ qua bàn phím/overlay
-        if (shouldIgnoreOverlay(pkg, cls)) {
-            Log.d(TAG, "Ignore overlay: $pkg / $cls")
-            return
-        }
+        if (pkg == currentPkg) return
+        currentPkg = pkg
 
         val isTarget = pkg in targets
         Log.d(TAG, "Foreground: $pkg (isTarget=$isTarget)")
 
         if (isTarget) {
-            cancelStopWithGrace()
+            cancelGrace()
 
+            // 1) Nếu thiếu projection → mở SetupActivity để xin lại
             if (!hasProjection()) {
                 Log.w(TAG, "Missing projection; launching SetupActivity to re-consent")
-                startActivity(Intent(this, SetupActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                })
+                startActivity(
+                    Intent(this, SetupActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                currentTargetPkg = pkg
                 return
             }
 
-            when {
-                currentTargetPkg == null -> {
-                    sendAction(MonitoringService.ACTION_START_SCREEN)
-                    Log.d(TAG, "START_SCREEN sent")
-                }
-                currentTargetPkg != pkg -> {
-                    sendAction(MonitoringService.ACTION_SPLIT_SCREEN)
-                    Log.d(TAG, "SPLIT_SCREEN sent (${currentTargetPkg} -> $pkg)")
-                }
-                else -> {
-                    // vẫn cùng target → không làm gì
-                }
+            // 2) START_SCREEN (kèm appTag), luôn dùng foreground service
+            val appTag = toAppTag(pkg)
+            val startIt = Intent(this, MonitoringService::class.java).apply {
+                action = MonitoringService.ACTION_START_SCREEN
+                putExtra("appTag", appTag)
             }
+            ContextCompat.startForegroundService(this, startIt)
+            Log.d(TAG, "START_SCREEN sent (appTag=$appTag)")
             currentTargetPkg = pkg
+
         } else {
-            // Rời target: chỉ lên lịch STOP; KHÔNG đổi currentTargetPkg ở đây
-            if (currentTargetPkg != null) scheduleStopWithGrace()
+            // Không phải target: nhưng nếu chỉ là màn chen ngang thì cho nới thời gian
+            val inInterlude = currentTargetPkg != null && pkg in interludes
+            val inLauncher  = pkg in launchers
+
+            val delay = when {
+                inLauncher -> 3_000L                 // về Home → dừng nhanh (3s)
+                inInterlude -> INTERLUDE_GRACE_MS    // chen ngang → chờ lâu hơn
+                else -> GRACE_MS                     // bình thường
+            }
+            scheduleGrace(delay)
         }
     }
 
-    private fun shouldIgnoreOverlay(pkg: String, cls: String): Boolean {
-        if (pkg in ignorePkgs) return true
-        val s = (pkg + ":" + cls).lowercase()
-        return s.contains("inputmethod") || s.contains("keyboard")
-    }
+    override fun onInterrupt() {}
 
-    private fun scheduleStopWithGrace() {
-        cancelStopWithGrace()
-        stopGraceRunnable = Runnable {
-            sendAction(MonitoringService.ACTION_STOP_SCREEN)
-            Log.d(TAG, "STOP_SCREEN sent by grace")
-            currentTargetPkg = null // hết quay, reset target
+    // ===== Helpers =====
+
+    private fun scheduleGrace(delayMs: Long) {
+        cancelGrace()
+        graceRunnable = Runnable {
+            startService(Intent(this, MonitoringService::class.java).apply {
+                action = MonitoringService.ACTION_STOP_SCREEN
+            })
+            Log.d(TAG, "STOP_SCREEN sent by grace ($delayMs ms)")
+            currentTargetPkg = null
         }
-        handler.postDelayed(stopGraceRunnable!!, stopGraceMs)
+        handler.postDelayed(graceRunnable!!, delayMs)
     }
 
-    private fun cancelStopWithGrace() {
-        stopGraceRunnable?.let { handler.removeCallbacks(it) }
-        stopGraceRunnable = null
-    }
 
-    private fun sendAction(action: String) {
-        val it = Intent(this, MonitoringService::class.java).apply { this.action = action }
-        ContextCompat.startForegroundService(this, it)
+    private fun cancelGrace() {
+        graceRunnable?.let { handler.removeCallbacks(it) }
+        graceRunnable = null
     }
 
     private fun hasProjection(): Boolean =
         getSharedPreferences("mprefs", MODE_PRIVATE).getBoolean("hasProjection", false)
 
-    override fun onInterrupt() {}
-    override fun onDestroy() { super.onDestroy(); cancelStopWithGrace() }
-}
+    private fun toAppTag(pkg: String) = when (pkg) {
+        "com.zing.zalo" -> "zalo"
+        "com.facebook.orca" -> "messenger"
+        "org.telegram.messenger" -> "telegram"
+        "com.whatsapp" -> "whatsapp"
+        "com.google.android.apps.messaging", "com.samsung.android.messaging" -> "sms"
+        else -> pkg
+    }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        cancelGrace()
+    }
+}

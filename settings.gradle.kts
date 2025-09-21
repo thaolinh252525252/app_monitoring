@@ -1,22 +1,15 @@
 pluginManagement {
     repositories {
-        google {
-            content {
-                includeGroupByRegex("com\\.android.*")
-                includeGroupByRegex("com\\.google.*")
-                includeGroupByRegex("androidx.*")
-            }
-        }
+        google()
         mavenCentral()
         gradlePluginPortal()
     }
     resolutionStrategy {
         eachPlugin {
             when (requested.id.id) {
-                "com.android.application" -> useVersion("8.1.0")
-                "org.jetbrains.kotlin.android" -> useVersion("1.9.0")
-                "org.jetbrains.kotlin.plugin.compose" -> useVersion("1.9.0")
-                "com.google.gms.google-services" -> useVersion("4.4.0")
+                "com.android.application"      -> useVersion("8.4.2")
+                "org.jetbrains.kotlin.android" -> useVersion("1.9.24")
+                "com.google.gms.google-services" -> useVersion("4.4.1")
             }
         }
     }
@@ -26,10 +19,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        // maven { url = uri("https://jitpack.io") } // Giữ nếu cần
-        // Comment hoặc xóa: maven { url = uri("https://maven.ffmpegkit.org") }
     }
 }
-
 rootProject.name = "ChildMonitoringApp"
 include(":app")

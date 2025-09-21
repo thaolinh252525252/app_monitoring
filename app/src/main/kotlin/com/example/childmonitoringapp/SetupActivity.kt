@@ -105,28 +105,24 @@ class SetupActivity : AppCompatActivity() {
         super.onActivityResult(req, resultCode, data)
         if (req == REQ_CAPTURE) {
             if (resultCode == Activity.RESULT_OK && data != null) {
-                // Bơm projection vào Service
                 val svc = Intent(this, MonitoringService::class.java).apply {
                     action = MonitoringService.ACTION_SET_PROJECTION
                     putExtra("resultCode", resultCode)
+//                    putExtra("data", data) // 👈 dùng "data" để Service đọc được
                     putExtra("projectionData", data)
+
                 }
-                androidx.core.content.ContextCompat.startForegroundService(this, svc)
+                ContextCompat.startForegroundService(this, svc)
 
-                Toast.makeText(
-                    this,
-                    "Đã xin quyền quay màn hình. Bật Trợ năng để bắt đầu theo app.",
-                    Toast.LENGTH_LONG
-                ).show()
-
-                // Mở trang Trợ năng ngay cho người dùng bật
+                Toast.makeText(this, "Đã xin quyền quay màn hình. Bật Trợ năng để bắt đầu theo app.", Toast.LENGTH_LONG).show()
                 openAccessibilitySettings()
-                startAccPoll() // (nếu bạn đã có hàm poll này)
+                startAccPoll()
             } else {
                 Toast.makeText(this, "Bạn đã từ chối quyền quay màn hình", Toast.LENGTH_LONG).show()
             }
         }
     }
+
 
 
     // Mở trang chi tiết nếu ROM hỗ trợ, không thì fallback trang Trợ năng chung

