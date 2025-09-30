@@ -26,7 +26,12 @@ class SetupActivity : AppCompatActivity() {
     private val REQ_CAPTURE = 101
 
     private lateinit var mpm: MediaProjectionManager
-
+    private fun ensureBackgroundPrivs() {
+        openBatteryNoRestrictions()
+        openMiuiAutostart()
+        // (tuỳ) mở thêm trang quyền nền MIUI
+         openMiuiBackgroundPermissions()
+    }
     // Poll kiểm tra trợ năng đã bật chưa
     private val accHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val accPoll = object : Runnable {
@@ -34,6 +39,8 @@ class SetupActivity : AppCompatActivity() {
             if (isAccessibilityEnabled()) {
                 Toast.makeText(this@SetupActivity, "Đã bật Trợ năng cho ứng dụng", Toast.LENGTH_SHORT).show()
                 accHandler.removeCallbacks(this)
+
+                ensureBackgroundPrivs()
             } else {
                 accHandler.postDelayed(this, 500)
             }
@@ -155,6 +162,75 @@ class SetupActivity : AppCompatActivity() {
         val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
         return enabled.split(':').any { it.equals(me, ignoreCase = true) } && am.isEnabled
     }
+    // SetupActivity.kt (thêm vào class)
+    private fun openMiuiAutostart() {
+        try {
+            // Nhiều MIUI dùng activity này
+            val intent = Intent().apply {
+                component = ComponentName(
+                    "com.miui.securitycenter",
+                    "com.miui.permcenter.autostart.AutoStartManagementActivity"
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            // Fallback: trang app details
+            startActivity(
+                Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(android.net.Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            Toast.makeText(this, "Không thấy mục Autostart trong ROM này. Hãy mở ‘Quyền’/‘Tự khởi động’ nếu có.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun openBatteryNoRestrictions() {
+        try {
+            // Thử mở màn hình bỏ tối ưu pin cho app
+            val pm = getSystemService(android.os.PowerManager::class.java)
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        .setData(android.net.Uri.parse("package:$packageName"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } else {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (_: Exception) {
+            // Fallback: trang pin chung của app
+            try {
+                startActivity(
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(android.net.Uri.parse("package:$packageName"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                Toast.makeText(this, "Vào mục Pin của ứng dụng và chọn ‘Không hạn chế’.", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) { /* ignore */ }
+        }
+    }
+
+    // (tuỳ chọn) Trang chỉnh quyền nền MIUI
+    private fun openMiuiBackgroundPermissions() {
+        try {
+            val intent = Intent().apply {
+                component = ComponentName(
+                    "com.miui.securitycenter",
+                    "com.miui.permcenter.permissions.PermissionsEditorActivity"
+                )
+                putExtra("extra_pkgname", packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            Toast.makeText(this, "ROM không hỗ trợ trang quyền nền MIUI này.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
 
     private fun startAccPoll() {
         accHandler.removeCallbacks(accPoll)

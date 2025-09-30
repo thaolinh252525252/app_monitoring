@@ -23,10 +23,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
 
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-
     <uses-feature android:name="android.hardware.telephony" android:required="false"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <queries>
         <package android:name="com.google.android.apps.messaging"/>
@@ -74,13 +72,25 @@
         </service>
 
         <!-- ⭐ Phải exported=true để nhận BOOT_COMPLETED từ hệ thống -->
+
+
         <receiver
             android:name=".boot.BootReceiver"
-            android:exported="true">
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED"/>
             </intent-filter>
         </receiver>
+
+        <!-- Khuyên nên khai báo type để Android 14+ không chặn -->
+        <service
+            android:name=".service.MonitoringService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|microphone"/>
+
 
         <provider
             android:name="androidx.core.content.FileProvider"

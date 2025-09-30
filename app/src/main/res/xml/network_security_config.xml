@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- TẠM thời bật HTTP cleartext cho mọi host (vì bạn dùng IP) -->
+    <base-config cleartextTrafficPermitted="true" />
+    <!-- Có thể giữ domain cũ nếu muốn, nhưng không bắt buộc -->
+    <!--
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">thaolinh-001-site1.qtempurl.com</domain>
     </domain-config>
+    -->
 </network-security-config>

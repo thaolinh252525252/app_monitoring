@@ -21,17 +21,19 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "API_BASE_URL", "\"http://thaolinh-001-site1.qtempurl.com/\"")
+//        buildConfigField("String", "API_BASE_URL", "\"http://thaolinh-001-site1.qtempurl.com/\"")
         buildConfigField("String", "API_KEY", "\"demo-secret-key\"")
+        buildConfigField("String", "API_BASE_URL", "\"http://159.223.73.53/\"")
+
     }
 
     buildTypes {
+        debug {
+            // dùng CÙNG key như server hiện tại
+            buildConfigField("String","API_KEY","\"demo-secret-key\"")
+        }
         release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            buildConfigField("String","API_KEY","\"demo-secret-key\"")
         }
     }
     compileOptions {
@@ -81,14 +83,14 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // FFmpeg (nếu cần xử lý video)
-    implementation("io.github.xch168:ffmpeg-kit-full-gpl:1.0.2")
-
-    // Firebase
+//    implementation("io.github.xch168:ffmpeg-kit-full-gpl:1.0.2")
+//    implementation("com.arthenica:ffmpeg-kit-full-gpl:6.0-2.LTS")
+    // Firebasex
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-storage-ktx")
     implementation("com.google.firebase:firebase-analytics-ktx") // Tùy chọn
 
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-moshi:2.11.0")
     implementation("com.squareup.moshi:moshi-kotlin:1.15.1")

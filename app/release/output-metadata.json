@@ -4,7 +4,7 @@
     "type": "APK",
     "kind": "Directory"
   },
-  "applicationId": "com.example.childmonitoringapp",
+  "applicationId": "ParentMonitoringApp_1.a1",
   "variantName": "release",
   "elements": [
     {
@@ -33,5 +33,5 @@
       ]
     }
   ],
-  "minSdkVersionForDexing": 33
+  "minSdkVersionForDexing": 29
 }

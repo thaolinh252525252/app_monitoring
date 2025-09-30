@@ -30,4 +30,19 @@
         android:layout_height="wrap_content"
         android:text="Bật Trợ năng"
         android:layout_marginTop="20dp"/>
+
+    <Button
+        android:id="@+id/btn_battery"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Bỏ tối ưu pin (No restrictions)"
+        android:layout_marginTop="16dp" />
+
+    <Button
+        android:id="@+id/btn_autostart"
+        android:layout_width="329dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Bật tự khởi động (Auto-start)" />
+
 </LinearLayout>
